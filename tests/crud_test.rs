@@ -5,6 +5,7 @@
 #![allow(unused_assignments)]
 #![allow(unused_must_use)]
 #![allow(dead_code)]
+#![allow(mismatched_lifetime_syntaxes)]
 
 #[macro_use]
 extern crate rbatis;
@@ -1131,7 +1132,7 @@ mod test {
     }
 
     #[test]
-    fn test_select_in_column() {
+    fn test_select_in_map() {
         let f = async move {
             let mut rb = RBatis::new();
             let queue = Arc::new(SyncVec::new());
@@ -1149,7 +1150,7 @@ mod test {
     }
 
     #[test]
-    fn test_delete_in_column() {
+    fn test_delete_in_map() {
         let f = async move {
             let mut rb = RBatis::new();
             let queue = Arc::new(SyncVec::new());
@@ -1381,6 +1382,305 @@ mod test {
                 sql,
                 "select count(1) as count from activity where delete_flag = 0 and var1 = ? and name=?"
             );
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_update_by_map_with_set() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let t = MockTable {
+                id: Some("2".into()),
+                name: Some("2".into()),
+                pc_link: Some("2".into()),
+                h5_link: Some("2".into()),
+                pc_banner_img: None,
+                h5_banner_img: None,
+                sort: None,
+                status: Some(2),
+                remark: Some("2".into()),
+                create_time: Some(DateTime::now()),
+                version: Some(1),
+                delete_flag: Some(1),
+                count: 0,
+            };
+            let r = MockTable::update_by_map(&mut rb, &t, value!{"id":"2", "column": ["name", "status"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "update mock_table set name=?, status=?  where id = ?");
+            assert_eq!(args.len(), 3);
+            assert_eq!(
+                args,
+                vec![
+                    value!(t.name),
+                    value!(t.status),
+                    value!(t.id),
+                ]
+            );
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_update_by_map_with_set_single_field() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let t = MockTable {
+                id: Some("2".into()),
+                name: Some("Updated Name".into()),
+                pc_link: Some("2".into()),
+                h5_link: Some("2".into()),
+                pc_banner_img: None,
+                h5_banner_img: None,
+                sort: None,
+                status: Some(2),
+                remark: Some("2".into()),
+                create_time: Some(DateTime::now()),
+                version: Some(1),
+                delete_flag: Some(1),
+                count: 0,
+            };
+            let r = MockTable::update_by_map(&mut rb, &t, value!{"id":"2", "column": ["name"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "update mock_table set name=?  where id = ?");
+            assert_eq!(args.len(), 2);
+            assert_eq!(
+                args,
+                vec![
+                    value!(t.name),
+                    value!(t.id),
+                ]
+            );
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_update_by_map_with_set_no_condition() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let t = MockTable {
+                id: Some("2".into()),
+                name: Some("Updated Name".into()),
+                pc_link: Some("2".into()),
+                h5_link: Some("2".into()),
+                pc_banner_img: None,
+                h5_banner_img: None,
+                sort: None,
+                status: Some(2),
+                remark: Some("2".into()),
+                create_time: Some(DateTime::now()),
+                version: Some(1),
+                delete_flag: Some(1),
+                count: 0,
+            };
+            let r = MockTable::update_by_map(&mut rb, &t, value!{"column": ["name", "status"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "update mock_table set name=?, status=? ");
+            assert_eq!(args.len(), 2);
+            assert_eq!(
+                args,
+                vec![
+                    value!(t.name),
+                    value!(t.status),
+                ]
+            );
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_update_by_map_with_set_empty_list() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            rb.init(MockDriver {}, "test").unwrap();
+            let t = MockTable {
+                id: Some("2".into()),
+                name: Some("Updated Name".into()),
+                pc_link: Some("2".into()),
+                h5_link: Some("2".into()),
+                pc_banner_img: None,
+                h5_banner_img: None,
+                sort: None,
+                status: Some(2),
+                remark: Some("2".into()),
+                create_time: Some(DateTime::now()),
+                version: Some(1),
+                delete_flag: Some(1),
+                count: 0,
+            };
+            let ids: Vec<String> = vec![];
+            let result = MockTable::update_by_map(&mut rb, &t, value!{"id":"2", "column": ids}).await;
+
+            // Empty column list should return 0 rows affected without error
+            assert!(result.is_ok());
+            let result = result.unwrap();
+            assert_eq!(result.rows_affected, 0);
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_update_by_map_with_set_array_condition() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let t = MockTable {
+                id: Some("2".into()),
+                name: Some("Updated Name".into()),
+                pc_link: Some("2".into()),
+                h5_link: Some("2".into()),
+                pc_banner_img: None,
+                h5_banner_img: None,
+                sort: None,
+                status: Some(2),
+                remark: Some("2".into()),
+                create_time: Some(DateTime::now()),
+                version: Some(1),
+                delete_flag: Some(1),
+                count: 0,
+            };
+            let r = MockTable::update_by_map(&mut rb, &t, value!{"id": ["1", "2", "3"], "column": ["name"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "update mock_table set name=?  where id in (?, ?, ? )");
+            assert_eq!(args.len(), 4);
+            assert_eq!(
+                args,
+                vec![
+                    value!(t.name),
+                    value!("1"),
+                    value!("2"),
+                    value!("3"),
+                ]
+            );
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_select_by_map_with_columns() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let r = MockTable::select_by_map(&mut rb, value!{"id":"1", "column": ["id", "name"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "select id, name from mock_table where id = ?");
+            assert_eq!(args.len(), 1);
+            assert_eq!(args, vec![value!("1")]);
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_select_by_map_with_single_column() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let r = MockTable::select_by_map(&mut rb, value!{"id":"1", "column": ["name"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "select name from mock_table where id = ?");
+            assert_eq!(args.len(), 1);
+            assert_eq!(args, vec![value!("1")]);
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_select_by_map_with_no_condition() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let r = MockTable::select_by_map(&mut rb, value!{"column": ["id", "name"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "select id, name from mock_table");
+            assert_eq!(args.len(), 0);
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_select_by_map_with_empty_column_list() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let columns: Vec<String> = vec![];
+            let r = MockTable::select_by_map(&mut rb, value!{"id":"1", "column": columns})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            // Empty column list should fall back to "*"
+            assert_eq!(sql, "select * from mock_table where id = ?");
+            assert_eq!(args.len(), 1);
+            assert_eq!(args, vec![value!("1")]);
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_select_by_map_with_columns_and_array_condition() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+            rb.init(MockDriver {}, "test").unwrap();
+            let r = MockTable::select_by_map(&mut rb, value!{"id": ["1", "2"], "column": ["id", "name"]})
+                .await
+                .unwrap();
+
+            let (sql, args) = queue.pop().unwrap();
+            println!("{}", sql);
+            assert_eq!(sql, "select id, name from mock_table where id in (?, ? )");
+            assert_eq!(args.len(), 2);
+            assert_eq!(args, vec![value!("1"), value!("2")]);
         };
         block_on(f);
     }

@@ -18,6 +18,7 @@
 ///  let tables = MockTable::select_by_map(rb,value!{"id":"1"}).await;
 ///  let tables = MockTable::select_all(rb).await;
 ///  let tables = MockTable::select_by_map(rb,value!{"id":["1","2","3"]}).await;
+///  let tables = MockTable::select_by_map(rb,value!{"id":"1", "column": ["id", "name"]}).await?; 
 ///
 ///  let r = MockTable::update_by_map(rb, &table, value!{"id":"1"}).await;
 ///
@@ -144,13 +145,15 @@ macro_rules! impl_insert {
 
 ///PySql: gen sql => SELECT (column1,column2,column3,...) FROM table_name (column1,column2,column3,...)  *** WHERE ***
 ///
-/// example:
+/// Supports selective column queries by specifying "column" key in condition:
 ///```rust
 /// use rbs::value;
 /// use rbatis::{Error, RBatis};
 /// #[derive(serde::Serialize, serde::Deserialize)]
 /// pub struct MockTable{
-///   pub id: Option<String>
+///   pub id: Option<String>,
+///   pub name: Option<String>,
+///   pub status: Option<String>
 /// }
 /// /// default
 ///rbatis::impl_select!(MockTable{});
@@ -161,7 +164,12 @@ macro_rules! impl_insert {
 ///
 /// //usage
 /// async fn test_select(rb:&RBatis) -> Result<(),Error>{
+///    // Select all columns
 ///    let r = MockTable::select_by_map(rb,value!{"id":"1"}).await?;
+///
+///    // Select only specific columns (id and name)
+///    let r = MockTable::select_by_map(rb,value!{"id":"1", "column": ["id", "name"]}).await?;
+///
 ///    let r = MockTable::select_all_by_id(rb,"1","xxx").await?;
 ///    let r:Option<MockTable> = MockTable::select_by_id(rb,"1".to_string()).await?;
 ///    let r:Vec<MockTable> = MockTable::select_by_id2(rb,"1".to_string()).await?;
@@ -177,10 +185,37 @@ macro_rules! impl_select {
     ($table:ty{},$table_name:expr) => {
         $crate::impl_select!($table{select_all() => ""},$table_name);
           impl $table {
-         pub async fn select_by_map(executor: &dyn $crate::executor::Executor, condition: rbs::Value) -> std::result::Result<Vec<$table>, $crate::rbdc::Error> {
+         pub async fn select_by_map(executor: &dyn $crate::executor::Executor, mut condition: rbs::Value) -> std::result::Result<Vec<$table>, $crate::rbdc::Error> {
                 use rbatis::crud_traits::ValueOperatorSql;
+
+                // Extract column specification and remove it from condition
+                let table_column = {
+                    let mut columns = String::new();
+                    let mut clean_map = rbs::value::map::ValueMap::with_capacity(condition.len());
+                    for (k, v) in condition {
+                            match k.as_str() {
+                                Some("column") => {
+                                    columns = match v {
+                                        rbs::Value::String(s) => s.clone(),
+                                        rbs::Value::Array(arr) => {
+                                            let cols: Vec<&str> = arr.iter()
+                                                .filter_map(|v| v.as_str())
+                                                .collect();
+                                            if cols.is_empty() { "*".to_string() } else { cols.join(", ") }
+                                        }
+                                        _ => "*".to_string(),
+                                    };
+                                }
+                                _ => { clean_map.insert(k.clone(), v.clone()); }
+                            }
+                    }
+                    if columns.is_empty() { columns = "*".to_string(); }
+                    condition = rbs::Value::Map(clean_map);
+                    columns
+                };
+
                 #[$crate::py_sql(
-          "`select * from ${table_name}`
+          "`select ${table_column} from ${table_name}`
            trim end=' where ':
              ` where `
              trim ' and ': for key,item in condition:
@@ -197,6 +232,7 @@ macro_rules! impl_select {
                 async fn select_by_map(
                     executor: &dyn $crate::executor::Executor,
                     table_name: String,
+                    table_column: &str,
                     condition: &rbs::Value
                 ) -> std::result::Result<Vec<$table>, $crate::rbdc::Error> {
                     for (_,v) in condition {
@@ -212,7 +248,7 @@ macro_rules! impl_select {
                          fn snake_name(){}
                          table_name = snake_name();
                 }
-                select_by_map(executor, table_name, &condition).await
+                select_by_map(executor, table_name, &table_column, &condition).await
        }
     }
     };
@@ -242,18 +278,30 @@ macro_rules! impl_select {
 }
 
 /// PySql: gen sql = UPDATE table_name SET column1=value1,column2=value2,... WHERE some_column=some_value;
+///
+/// Supports selective column updates by specifying "column" key in condition (GitHub issue #591):
 /// ```rust
 /// use rbs::value;
 /// use rbatis::{Error, RBatis};
 /// #[derive(serde::Serialize, serde::Deserialize)]
 /// pub struct MockTable{
-///   pub id: Option<String>
+///   pub id: Option<String>,
+///   pub name: Option<String>,
+///   pub status: Option<String>
 /// }
 /// rbatis::impl_update!(MockTable{});
 /// //use
 /// async fn test_use(rb:&RBatis) -> Result<(),Error>{
-///  let table = MockTable{id: Some("1".to_string())};
+///  let table = MockTable{
+///     id: Some("1".to_string()),
+///     name: Some("test".to_string()),
+///     status: Some("active".to_string())
+///  };
+///  // Update all columns
 ///  let r = MockTable::update_by_map(rb, &table, value!{"id":"1"}).await;
+///
+///  // Update only specific columns (name and status)
+///  let r = MockTable::update_by_map(rb, &table, value!{"id":"1", "column": ["name", "status"]}).await;
 ///  Ok(())
 /// }
 /// ```
@@ -270,31 +318,70 @@ macro_rules! impl_update {
             pub async fn update_by_map(
                 executor: &dyn $crate::executor::Executor,
                 table: &$table,
-                condition: rbs::Value
+                mut condition: rbs::Value
             ) -> std::result::Result<$crate::rbdc::db::ExecResult, $crate::rbdc::Error> {
-                use rbatis::crud_traits::ValueOperatorSql;
+                use rbatis::crud_traits::{ValueOperatorSql, FilterByColumns};
+
+                // Extract column list for selective updates - implements GitHub issue #591
+                // This allows updating only specific columns by specifying them in the condition
+                // Example: update_by_map(&rb, &activity, value!{"id": "123", "column": ["name", "status"]})
+                let set_columns = {
+                    let mut columns = rbs::Value::Null;
+                    let mut clean_map = rbs::value::map::ValueMap::with_capacity(condition.len());
+                    for (k, v) in condition {
+                            match k.as_str() {
+                                Some("column") => {
+                                    // Normalize column specification to Array format for filter_by_columns
+                                    columns = match v {
+                                        rbs::Value::String(s) => {
+                                            rbs::Value::Array(vec![rbs::Value::String(s.clone())])
+                                        }
+                                        rbs::Value::Array(arr) => {
+                                            let filtered_array: Vec<rbs::Value> = arr.iter()
+                                                .filter(|v| v.as_str().is_some())
+                                                .cloned()
+                                                .collect();
+                                            if filtered_array.is_empty() {
+                                                rbs::Value::Null
+                                            } else {
+                                                rbs::Value::Array(filtered_array)
+                                            }
+                                        }
+                                        _ => rbs::Value::Null,
+                                    };
+                                }
+                                _ => { clean_map.insert(k.clone(), v.clone()); }
+                            }
+                    }
+                    condition = rbs::Value::Map(clean_map);
+                    columns
+                };
                 #[$crate::py_sql(
-                    "`update ${table_name}`
-                      set collection='table',skips='id':
+                    "`update ${table_name}
+                      if skip_null == false:
+                        set collection='table',skips='id',skip_null=false:
+                      if skip_null == true:
+                        set collection='table',skips='id':
                       trim end=' where ':
                        ` where `
                        trim ' and ': for key,item in condition:
-                          if item == null:
-                             continue:
-                          if !item.is_array():
-                            ` and ${key.operator_sql()}#{item}`
-                          if item.is_array():
-                            ` and ${key} in (`
-                               trim ',': for _,item_array in item:
-                                    #{item_array},
-                            `)`
+                            if item == null:
+                               continue:
+                            if !item.is_array():
+                              ` and ${key.operator_sql()}#{item}`
+                            if item.is_array():
+                              ` and ${key} in (`
+                                 trim ',': for _,item_array in item:
+                                      #{item_array},
+                              `)`
                     "
                 )]
-                  async fn update_by_map(
+                  async fn update_by_map_internal(
                       executor: &dyn $crate::executor::Executor,
                       table_name: String,
                       table: &rbs::Value,
-                      condition: &rbs::Value
+                      condition: &rbs::Value,
+                      skip_null: bool,
                   ) -> std::result::Result<$crate::rbdc::db::ExecResult, $crate::rbdc::Error> {
                       for (_,v) in condition {
                         if v.is_array() && v.is_empty(){
@@ -309,11 +396,17 @@ macro_rules! impl_update {
                          fn snake_name(){}
                          table_name = snake_name();
                   }
-                  let table = rbs::value!(table);
-                  update_by_map(executor, table_name, &table, &condition).await
+                  let table_value = rbs::value!(table);
+                  let mut skip_null = true;
+                  let table = if set_columns != rbs::Value::Null {
+                    skip_null = false;
+                    table_value.filter_by_columns(&set_columns)
+                  } else {
+                    table_value
+                  };
+                  update_by_map_internal(executor, table_name, &table, &condition, skip_null).await
             }
         }
-
     };
     ($table:ty{$fn_name:ident($($param_key:ident:$param_type:ty$(,)?)*) => $sql_where:expr}$(,$table_name:expr)?) => {
         impl $table {
@@ -444,6 +537,7 @@ macro_rules! impl_delete {
         }
     };
 }
+
 
 /// pysql impl_select_page
 ///
@@ -693,7 +787,7 @@ macro_rules! pysql {
 /// for example query rbs::Value:
 /// ```rust
 /// use rbatis::executor::Executor;
-/// rbatis::htmlsql!(test_select_column(rb: &dyn Executor, id: &u64)  -> Result<rbs::Value, rbatis::Error> => r#"
+/// rbatis::htmlsql!(test_select(rb: &dyn Executor, id: &u64)  -> Result<rbs::Value, rbatis::Error> => r#"
 ///             <mapper>
 ///             <select id="test_same_id">
 ///               `select ${id} from my_table`

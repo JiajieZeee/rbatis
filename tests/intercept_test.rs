@@ -1,8 +1,8 @@
+#![allow(mismatched_lifetime_syntaxes)]
 #[cfg(test)]
 mod test {
     use async_trait::async_trait;
     use futures_core::future::BoxFuture;
-    use log::{Log, Metadata, Record};
     use rbatis::executor::Executor;
     use rbatis::intercept::{Intercept, ResultType};
     use rbatis::{Error, RBatis};
@@ -11,24 +11,6 @@ mod test {
     use rbs::Value;
     use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Arc;
-
-    pub struct Logger {}
-
-    impl Log for Logger {
-        fn enabled(&self, _metadata: &Metadata) -> bool {
-            return true;
-        }
-
-        fn log(&self, record: &Record) {
-            println!(
-                "[{}]{}",
-                record.module_path_static().unwrap(),
-                record.args()
-            )
-        }
-
-        fn flush(&self) {}
-    }
 
     #[derive(Debug, Clone)]
     struct MockDriver {}
@@ -218,7 +200,6 @@ mod test {
         }));
         let m = rb.get_intercept::<MockIntercept>();
         assert_eq!(m.is_some(), true);
-        println!("{}", m.unwrap().name());
         let m = m.unwrap();
         m.inner.store(1, Ordering::SeqCst);
         assert_eq!(m.inner.load(Ordering::Relaxed), 1);
